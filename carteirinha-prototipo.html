@@ -1,0 +1,624 @@
+<!doctype html>
+<!--
+  =====================================================================
+  CARTEIRINHA ESTUDANTIL DIGITAL — PROTÓTIPO (MVP)
+  =====================================================================
+  O que é:
+    Uma página única (HTML + CSS + JavaScript, tudo neste arquivo) que
+    simula uma carteirinha estudantil digital no celular. Serve para
+    demonstrar a ideia à faculdade; NÃO é um documento válido.
+
+  Como funciona, em resumo:
+    1. O HTML desenha a carteirinha (cabeçalho, campos, foto, código).
+    2. O CSS dá o visual (cores, tamanhos, arredondamentos).
+    3. O JavaScript:
+       - exibe os dados da carteirinha como campos somente leitura;
+       - mostra a foto e o logo previamente configurados;
+       - gera o código de barras a partir do número do RA;
+       - gira a carteirinha ao ser tocada, mostrando o verso;
+       - gera, no verso, um QR code que leva à declaração de matrícula.
+
+  Onde os dados ficam:
+    Tudo fica salvo APENAS no navegador do próprio celular (localStorage).
+    Nada é enviado para servidor nenhum.
+
+  Bibliotecas externas:
+    - JsBarcode: gera o desenho do código de barras.
+    - QRCode.js: gera o QR code do verso.
+    - Google Fonts (Noto Sans): fonte usada no texto.
+  =====================================================================
+-->
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+
+<!--
+  Configurações para celular:
+  - viewport: faz a página ocupar a largura da tela sem dar zoom.
+    "viewport-fit=cover" deixa usar a área inteira do iPhone (inclusive
+    perto do notch / barra inferior).
+-->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+
+<!--
+  Configurações para o iPhone quando a página é adicionada à Tela de
+  Início (Safari → Compartilhar → Adicionar à Tela de Início):
+  - apple-mobile-web-app-capable: abre em tela cheia, sem a barra do Safari,
+    parecendo um aplicativo.
+  - status-bar-style: deixa a barra de status (hora, bateria) transparente.
+  - title: nome que aparece embaixo do ícone na Tela de Início.
+-->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Carteirinha">
+
+<!--
+  Ícone do app na Tela de Início do iPhone (180×180 px é o tamanho que o
+  iPhone usa; ele mesmo arredonda os cantos).
+  - Ao abrir a página, o JavaScript (seção 5) troca este link por um ícone
+    gerado na hora: fundo azul-marinho com o logo escolhido no centro.
+  - "apple-touch-icon.png" é só uma reserva: se você hospedar a página
+    junto com um arquivo com esse nome, ele é usado caso o JavaScript
+    não rode.
+-->
+<link rel="apple-touch-icon" id="appIcon" href="apple-touch-icon.png">
+
+<title>Carteirinha Digital (Protótipo)</title>
+
+<!-- Fonte Noto Sans, nos pesos 500 (médio), 700 (negrito) e 800 (extra negrito). -->
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@500;700;800&display=swap" rel="stylesheet">
+
+<!-- Biblioteca JsBarcode (versão fixa 3.11.6), usada para desenhar o código de barras. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
+
+<!-- Biblioteca QRCode.js (versão fixa 1.0.0), usada para desenhar o QR code do verso. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+<style>
+  /* =================================================================
+     CORES DO PROJETO
+     Ficam centralizadas aqui em "variáveis". Para mudar uma cor em
+     toda a carteirinha, basta trocar o valor em um único lugar.
+     ================================================================= */
+  :root{
+    --navy:#1f1f82;   /* azul-marinho do cabeçalho e do código de barras */
+    --gold:#d9c35a;   /* faixa dourada abaixo do cabeçalho */
+    --ink:#1d1b4f;    /* cor do texto dos dados (nome, curso, CPF, RA) */
+    --label:#6b7280;  /* cinza dos rótulos (NOME, CURSO, CPF, RA) */
+    --page:#111214;   /* fundo escuro da tela, atrás da carteirinha */
+    --card:#ffffff;   /* fundo branco da carteirinha */
+  }
+
+  /* Zera margens/espaçamentos padrão do navegador e faz o tamanho dos
+     elementos incluir a borda e o espaçamento interno (mais previsível). */
+  *{box-sizing:border-box;margin:0;padding:0}
+
+  /* =================================================================
+     PÁGINA
+     Centraliza a carteirinha na tela, vertical e horizontalmente.
+     "env(safe-area-inset-bottom)" adiciona espaço extra no iPhone para
+     não ficar embaixo da barra de gestos.
+     ================================================================= */
+  body{
+    background:var(--page); font-family:"Noto Sans",system-ui,sans-serif;
+    min-height:100vh; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; padding:24px 16px calc(24px + env(safe-area-inset-bottom));
+    -webkit-tap-highlight-color:transparent; /* remove o "flash" cinza ao tocar no iPhone */
+  }
+
+  /* =================================================================
+     GIRO 3D DA CARTEIRINHA
+     A carteirinha tem duas faces (frente e verso) empilhadas uma sobre
+     a outra, dentro de três camadas:
+
+       .scene   → o "palco". "perspective" define a distância da câmera:
+                  é o que faz o giro parecer 3D (lados se aproximam e se
+                  afastam). Valor menor = efeito mais exagerado.
+                  Ocupa a largura da tela, mas no máximo 420px.
+
+       .flipper → a peça que efetivamente gira em torno do eixo
+                  vertical (rotateY). O JavaScript muda o ângulo e a
+                  "transition" anima a mudança.
+                  "transform-style: preserve-3d" mantém as faces filhas
+                  no espaço 3D (sem isso, o verso não apareceria).
+                  A curva cubic-bezier faz o giro começar rápido e
+                  desacelerar suavemente até parar.
+
+       .card    → cada face. "backface-visibility: hidden" esconde a face
+                  quando ela está de costas para a câmera, assim só uma
+                  aparece de cada vez.
+
+     Os prefixos "-webkit-" são necessários no Safari do iPhone.
+     ================================================================= */
+  .scene{width:100%; max-width:420px; perspective:1600px; -webkit-perspective:1600px}
+  .flipper{
+    position:relative; cursor:pointer;
+    transform-style:preserve-3d; -webkit-transform-style:preserve-3d;
+    transition:transform 1.8s cubic-bezier(.2,.75,.25,1);
+  }
+
+  /* Cada face do cartão. "position:relative" permite posicionar a marca
+     d'água por cima dela. */
+  .card{
+    position:relative; background:var(--card);
+    border-radius:22px; overflow:hidden; box-shadow:0 20px 50px rgba(0,0,0,.45);
+    backface-visibility:hidden; -webkit-backface-visibility:hidden;
+  }
+  /* A frente fica na posição normal (0°). Declarar o rotateY ajuda o
+     Safari a tratar a face como elemento 3D. */
+  .card.front{transform:rotateY(0deg)}
+  /* O verso fica exatamente por cima da frente (mesmo tamanho), mas já
+     virado 180°. Quando o .flipper gira 180°, ele fica de frente. */
+  .card.back{
+    position:absolute; inset:0; transform:rotateY(180deg);
+    display:flex; flex-direction:column;
+  }
+
+  /* Só a face visível recebe toques. Sem isso, um toque na frente
+     poderia acabar atingindo um campo do verso (que está "escondido"
+     no mesmo lugar). A classe "is-back" é colocada pelo JavaScript
+     quando o verso está aparecendo. */
+  .card.back{pointer-events:none}
+  .flipper.is-back .card.back{pointer-events:auto}
+  .flipper.is-back .card.front{pointer-events:none}
+
+  /* Acessibilidade: se o celular estiver com "Reduzir Movimento" ligado
+     (Ajustes → Acessibilidade → Movimento), o giro é mais curto e rápido. */
+  @media (prefers-reduced-motion: reduce){
+    .flipper{transition-duration:.4s}
+  }
+
+  /* =================================================================
+     CABEÇALHO AZUL (logo + "IDENTIDADE ESTUDANTIL")
+     ================================================================= */
+  .head{background:var(--navy); color:#fff; display:flex; align-items:center; gap:22px; padding:22px 26px}
+
+  /* Espaço do logo: antes de escolher uma imagem, aparece um círculo
+     branco escrito "LOGO". Ele funciona como botão para escolher o arquivo. */
+  .logo{
+    width:62px; height:62px; border:2.5px solid #fff; border-radius:50%;
+    display:grid; place-items:center; font-weight:800; font-size:13px; letter-spacing:.5px; flex:none;
+    cursor:default; position:relative; overflow:hidden;
+  }
+  /* Depois que um logo é escolhido (classe "has"), o círculo some e a
+     imagem aparece inteira, sem cortes ("object-fit:contain"). */
+  .logo.has{width:78px; height:78px; border:none; border-radius:0; overflow:visible}
+  .logo img{width:100%; height:100%; object-fit:contain}
+
+  /* Texto "IDENTIDADE ESTUDANTIL". */
+  .title{font-weight:800; font-size:24px; line-height:1.15; letter-spacing:2px}
+
+  /* Faixa dourada seguida de uma faixa azul. A faixa azul é feita com a
+     borda inferior do próprio elemento (border-bottom). */
+  .stripe{height:12px; background:var(--gold); border-bottom:14px solid var(--navy); box-sizing:content-box}
+
+  /* =================================================================
+     CORPO (dados do aluno + foto)
+     Usa uma grade de 2 colunas: à esquerda os campos, à direita a foto
+     com 116px de largura fixa.
+     ================================================================= */
+  .body{padding:22px 26px 10px; display:grid; grid-template-columns:1fr 116px; gap:0 18px}
+
+  /* Coluna da esquerda: NOME e CURSO, um embaixo do outro. */
+  .fields{display:flex; flex-direction:column; gap:16px; min-width:0}
+
+  /* Rótulo pequeno e cinza (ex.: "NOME"). */
+  .lbl{font-size:11px; font-weight:700; color:var(--label); letter-spacing:1.2px; margin-bottom:3px}
+
+  /* Valor do campo (ex.: o nome do aluno). Sempre em MAIÚSCULAS.
+     "word-break" quebra nomes muito longos em vez de estourar o cartão. */
+  .val{font-size:17px; font-weight:500; color:var(--ink); text-transform:uppercase; word-break:break-word; border-radius:4px}
+
+  /* Linha com CPF e RA lado a lado. "grid-column:1 / -1" faz essa linha
+     ocupar as duas colunas da grade (passa por baixo da foto). */
+  .row{display:grid; grid-template-columns:1fr 1fr; gap:12px; grid-column:1 / -1; margin-top:16px}
+
+  /* =================================================================
+     FOTO DO ALUNO
+     Antes de ter foto: quadro tracejado escrito "TOQUE PARA ADICIONAR FOTO".
+     Depois: a imagem preenche o quadro todo ("object-fit:cover" recorta
+     as sobras para não distorcer o rosto).
+     ================================================================= */
+  .photo{
+    width:116px; height:148px; border-radius:10px; background:#eef0f6; border:2px dashed #b9bdd6;
+    display:grid; place-items:center; text-align:center; color:#7a7fa3; font-size:12px; font-weight:700;
+    cursor:default; overflow:hidden; position:relative;
+  }
+  .photo img{position:absolute; inset:0; width:100%; height:100%; object-fit:cover}
+  .photo.has{border:none} /* tira a borda tracejada quando já tem foto */
+
+  /* =================================================================
+     CÓDIGO DE BARRAS
+     O desenho é gerado pelo JavaScript dentro do <svg id="barcode">.
+     Aqui só garantimos que ele se ajuste à largura do cartão.
+     ================================================================= */
+  .bar{margin:18px 26px 8px; background:#fff; display:flex; justify-content:center}
+  .bar svg{width:100%; height:auto; max-height:110px}
+
+  /* =================================================================
+     AVISOS DE PROTÓTIPO
+     - .demo: faixa amarela no rodapé dizendo que não é documento válido.
+     - .wm: marca d'água "PROTÓTIPO" em diagonal, bem clarinha, por cima
+       de todo o cartão. "pointer-events:none" deixa tocar nos campos
+       através dela.
+     ================================================================= */
+  .demo{
+    background:#fff4d6; color:#7a5a00; font-size:11px; font-weight:700; text-align:center;
+    padding:8px 12px; letter-spacing:.5px;
+  }
+  .wm{
+    position:absolute; inset:0; display:grid; place-items:center; pointer-events:none;
+    font-weight:800; font-size:56px; color:rgba(31,31,130,.06); transform:rotate(-28deg); letter-spacing:6px;
+  }
+
+  /* =================================================================
+     VERSO — DECLARAÇÃO DE MATRÍCULA
+     Reaproveita o cabeçalho azul e a faixa dourada da frente.
+     .back-body ocupa todo o espaço que sobra (flex:1) entre o cabeçalho
+     e a faixa de protótipo, com o conteúdo centralizado. Se o conteúdo
+     não couber (tela muito pequena), aparece rolagem só ali dentro.
+     ================================================================= */
+  .back-body{
+    flex:1; min-height:0; overflow:auto; padding:14px 26px 12px;
+    display:flex; flex-direction:column; align-items:center; gap:10px; text-align:center;
+  }
+  .back-txt{font-size:13px; color:var(--label); line-height:1.4; max-width:280px}
+
+  /* Quadro do QR code (180×180 px). É um link: tocar abre o PDF.
+     "margin:auto 0" centraliza o QR na vertical no espaço do verso.
+     Ao tocar, ele "afunda" levemente (scale .96), indicando que é clicável. */
+  .qr{
+    width:180px; height:180px; flex:none; margin:auto 0; display:block;
+    background:#fff; border-radius:12px; text-decoration:none; transition:transform .15s;
+  }
+  .qr:active{transform:scale(.96)}
+  /* A biblioteca cria um <canvas> e uma <img>; ambos se ajustam ao quadro. */
+  .qr #qrCode img, .qr #qrCode canvas{width:180px !important; height:180px !important}
+
+  /* Texto de ajuda que aparece abaixo do cartão. */
+  .hint{color:#9aa0b4; font-size:13px; margin-top:16px; text-align:center; max-width:420px; line-height:1.5}
+
+  /* Os seletores de arquivo não ficam disponíveis nesta versão somente leitura. */
+  input[type=file]{display:none}
+</style>
+</head>
+<body>
+  <!-- ================================================================
+       ESTRUTURA DA CARTEIRINHA
+       ================================================================ -->
+  <!--
+    .scene   = palco com perspectiva 3D
+    .flipper = peça que gira (o toque em qualquer parte dela vira a carteirinha)
+    Dentro dele ficam as duas faces: .front (frente) e .back (verso).
+  -->
+  <div class="scene">
+  <div class="flipper" id="flipper">
+
+  <!-- ===================== FRENTE ===================== -->
+  <div class="card front">
+
+    <!-- CABEÇALHO: logo + título -->
+    <div class="head">
+      <div class="logo" id="logo"><span id="logoTxt">LOGO</span></div>
+      <div class="title">IDENTIDADE<br>ESTUDANTIL</div>
+    </div>
+
+    <!-- Faixa dourada + azul -->
+    <div class="stripe"></div>
+
+    <!-- CORPO: dados do aluno e foto -->
+    <div class="body">
+      <!--
+        Campos somente leitura. O atributo "data-k" é usado apenas para
+        localizar um valor já salvo no navegador.
+      -->
+      <div class="fields">
+        <div><div class="lbl">NOME</div><div class="val" data-k="nome">Vinicius Lobo de Jesus</div></div>
+        <div><div class="lbl">CURSO</div><div class="val" data-k="curso">Fisioterapia</div></div>
+      </div>
+
+      <!-- Quadro da foto, exibido apenas como conteúdo. -->
+      <div class="photo" id="photo">
+        <span id="photoTxt">TOQUE PARA<br>ADICIONAR<br>FOTO</span>
+      </div>
+
+      <!-- CPF e RA lado a lado. O RA tem id="ra" porque o código de
+           barras é gerado a partir dele. -->
+      <div class="row">
+        <div><div class="lbl">CPF</div><div class="val" data-k="cpf">440.408.838-88</div></div>
+        <div><div class="lbl">RA</div><div class="val" data-k="ra" id="ra">00118944</div></div>
+      </div>
+    </div>
+
+    <!-- Código de barras: começa vazio e é desenhado pelo JavaScript. -->
+    <div class="bar"><svg id="barcode"></svg></div>
+
+    
+  </div>
+
+  <!-- ===================== VERSO ===================== -->
+  <div class="card back">
+    <!-- Mesmo cabeçalho e faixa da frente, com outro título. -->
+    <div class="head">
+      <div class="title">DECLARAÇÃO<br>DE MATRÍCULA</div>
+    </div>
+    <div class="stripe"></div>
+
+    <div class="back-body">
+      <p class="back-txt">Toque no QR code ou aponte a câmera de outro celular para abrir a declaração de matrícula.</p>
+
+      <!-- Quadro do QR code. É um link (<a>): tocar nele abre o PDF da
+           declaração. O endereço (href) é definido pelo JavaScript
+           (constante LINK_DECLARACAO, seção 6).
+           #qrCode é onde a biblioteca desenha o QR. -->
+      <a class="qr" id="qr" target="_blank" rel="noopener" aria-label="Abrir declaração de matrícula">
+        <div id="qrCode"></div>
+      </a>
+    </div>
+  </div>
+
+  </div><!-- fim .flipper -->
+  </div><!-- fim .scene -->
+
+  <p class="hint">Toque na carteirinha para virar.</p>
+
+<script>
+  /* ===================================================================
+     1. ARMAZENAMENTO LOCAL
+     -------------------------------------------------------------------
+     "localStorage" é um pequeno espaço de memória do navegador que
+     continua existindo depois que a página é fechada. É ali que ficam
+     o nome, curso, CPF, RA, a foto e o logo.
+
+     Todas as chaves recebem o prefixo "cart_" (ex.: "cart_nome") para
+     não misturar com outros dados do navegador.
+
+     O "try/catch" evita que a página quebre em situações em que o
+     navegador bloqueia o armazenamento (ex.: aba anônima/privada).
+     Nesses casos, a carteirinha funciona, mas não salva nada.
+     =================================================================== */
+  const store = {
+    // Lê um valor salvo. Retorna null se não existir ou se der erro.
+    get(k){ try { return localStorage.getItem("cart_"+k); } catch(e){ return null; } },
+    // Salva um valor. Se der erro, simplesmente ignora.
+    set(k,v){ try { localStorage.setItem("cart_"+k, v); } catch(e){} }
+  };
+
+  /* ===================================================================
+     2. CÓDIGO DE BARRAS
+     -------------------------------------------------------------------
+     Pega o número digitado no campo RA e desenha o código de barras no
+     elemento <svg id="barcode">, usando a biblioteca JsBarcode.
+
+     Formato CODE128: o padrão mais comum em leitores de catraca e
+     biblioteca; aceita números e letras.
+
+     Opções usadas:
+       - lineColor:    cor das barras (o mesmo azul do cabeçalho)
+       - width:        espessura de cada barra fina, em pixels
+       - height:       altura das barras
+       - displayValue: mostra o número embaixo das barras
+       - fontOptions / fontSize / textMargin: estilo e espaço do número
+       - margin:       espaço em volta do código (0 = sem sobra)
+
+     Se o campo estiver vazio, usa "0" para não dar erro. O try/catch
+     protege caso o texto tenha algum caractere que o formato não aceita.
+     =================================================================== */
+  function drawBarcode(){
+    const ra = document.getElementById("ra").textContent.trim() || "0";
+    try {
+      JsBarcode("#barcode", ra, {
+        format:"CODE128", lineColor:"#1f1f82", width:2.2, height:80,
+        displayValue:true, font:"Noto Sans", fontOptions:"bold", fontSize:18, textMargin:6, margin:0
+      });
+    } catch(e) {}
+  }
+
+  /* ===================================================================
+     3. CAMPOS SOMENTE LEITURA (nome, curso, CPF, RA)
+     -------------------------------------------------------------------
+     Se existir um valor salvo, ele é exibido no lugar do exemplo.
+     Os campos não possuem eventos de edição.
+     =================================================================== */
+  document.querySelectorAll(".val").forEach(el=>{
+    const saved = store.get(el.dataset.k);
+    if (saved) el.textContent = saved;
+  });
+
+  /* ===================================================================
+     4. FOTO DO ALUNO
+     -------------------------------------------------------------------
+     Fluxo:
+       1. O usuário toca no quadro e escolhe uma imagem.
+       2. O FileReader lê o arquivo e o transforma em texto (data URL),
+          formato que o navegador consegue exibir e salvar.
+       3. A imagem é redesenhada num <canvas> de 360×460 px:
+            - fotos de celular costumam ter vários megabytes, e o
+              localStorage só guarda cerca de 5 MB no total; reduzir
+              garante que caiba;
+            - a proporção 360×460 é a mesma do quadro (116×148), então
+              a foto já sai no formato certo.
+          O cálculo "Math.max(W/largura, H/altura)" escolhe a escala que
+          faz a foto COBRIR todo o quadro; o que sobra nas laterais (ou
+          em cima/embaixo) é cortado igualmente dos dois lados, mantendo
+          o rosto centralizado.
+       4. Salva em JPEG com qualidade 85% (bom equilíbrio entre
+          qualidade e tamanho) e exibe no quadro.
+     =================================================================== */
+  const photo = document.getElementById("photo");
+
+  // Coloca a imagem dentro do quadro e esconde o texto "TOQUE PARA...".
+  function showPhoto(src){
+    photo.querySelectorAll("img").forEach(i=>i.remove()); // remove a foto anterior, se houver
+    const img = new Image(); img.src = src; photo.appendChild(img);
+    photo.classList.add("has");
+    document.getElementById("photoTxt").style.display="none";
+  }
+
+  // Usa a foto fornecida como imagem fixa do aluno.
+  showPhoto("foto-aluno.jpe");
+
+  /* ===================================================================
+     5. LOGO
+     -------------------------------------------------------------------
+     Mesmo fluxo da foto, com duas diferenças:
+       - O logo NÃO é cortado: é reduzido proporcionalmente para que o
+         lado maior tenha no máximo 240 px ("Math.min(1, ...)" impede
+         que imagens pequenas sejam ampliadas e fiquem borradas).
+       - É salvo em PNG (e não JPEG) para manter o fundo transparente,
+         importante porque o logo fica sobre o cabeçalho azul.
+     =================================================================== */
+  const logo = document.getElementById("logo");
+
+  /* -------------------------------------------------------------------
+     ÍCONE DO APP (Tela de Início do iPhone)
+     Desenha um quadrado de 180×180 px com o fundo azul-marinho do
+     cabeçalho e o logo centralizado, ocupando no máximo 62% do espaço
+     (deixa margem para os cantos arredondados que o iPhone aplica).
+     O resultado substitui o <link rel="apple-touch-icon"> do <head>.
+
+     Sem logo escolhido, gera um ícone provisório: fundo azul, faixa
+     dourada e as letras "ID".
+
+     IMPORTANTE: o iPhone lê o ícone no momento em que você toca em
+     "Adicionar à Tela de Início". Então escolha o logo ANTES de adicionar.
+     Se trocar o logo depois, remova o ícone da tela e adicione de novo.
+     ------------------------------------------------------------------- */
+  function makeIcon(logoSrc){
+    const S = 180, c = document.createElement("canvas");
+    c.width = S; c.height = S;
+    const ctx = c.getContext("2d");
+
+    ctx.fillStyle = "#1f1f82";                               // fundo azul-marinho
+    ctx.fillRect(0, 0, S, S);
+
+    const apply = ()=>{ document.getElementById("appIcon").href = c.toDataURL("image/png"); };
+
+    if (!logoSrc){                                            // ícone provisório
+      ctx.fillStyle = "#d9c35a"; ctx.fillRect(0, 128, S, 10); // faixa dourada
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "800 64px 'Noto Sans', sans-serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("ID", S/2, 76);
+      apply();
+      return;
+    }
+
+    const img = new Image();
+    img.onload = ()=>{
+      const box = S * 0.62;                                   // área máxima do logo
+      const s = Math.min(box/img.width, box/img.height);      // cabe inteiro, sem cortar
+      const w = img.width*s, h = img.height*s;
+      ctx.drawImage(img, (S-w)/2, (S-h)/2, w, h);             // centralizado
+      apply();
+    };
+    img.src = logoSrc;
+  }
+
+  // Coloca o logo no cabeçalho, esconde o texto "LOGO" e atualiza o ícone do app.
+  function showLogo(src){
+    logo.querySelectorAll("img").forEach(i=>i.remove());
+    const img = new Image(); img.src = src; logo.appendChild(img);
+    logo.classList.add("has");
+    document.getElementById("logoTxt").style.display="none";
+    makeIcon(src);
+  }
+
+  // Usa a imagem fornecida como logo fixo da carteirinha.
+  showLogo("uniso-logo.png");
+
+  /* ===================================================================
+     6. QR CODE DA DECLARAÇÃO DE MATRÍCULA (verso)
+     -------------------------------------------------------------------
+     O QR code aponta para o PDF da declaração. Ele serve de duas formas:
+       - tocando nele, o PDF abre no próprio celular;
+       - escaneando com a câmera de outro celular, o PDF abre lá.
+
+     >>> ONDE TROCAR O PDF <<<
+     A constante LINK_DECLARACAO abaixo define qual arquivo é aberto:
+       - "declaracao.pdf" (padrão): um arquivo com esse nome, hospedado
+         na MESMA pasta desta página (ex.: arraste os dois juntos no
+         Netlify Drop).
+       - Ou um link completo, ex.: o PDF no Google Drive compartilhado
+         como "qualquer pessoa com o link pode ver".
+
+     "new URL(..., location.href)" transforma "declaracao.pdf" no endereço
+     completo (https://seusite/declaracao.pdf). Isso é necessário porque
+     quem escaneia está em outro celular e precisa do endereço inteiro.
+
+     correctLevel M: nível médio de correção de erros. O QR continua
+     legível mesmo com até ~15% dele danificado ou com reflexo na tela.
+     =================================================================== */
+  const LINK_DECLARACAO = "declaracao.pdf";
+
+  const qrBox  = document.getElementById("qr");
+  const qrCode = document.getElementById("qrCode");
+
+  // Monta o endereço completo do PDF.
+  // Se a página foi aberta sem um endereço de verdade (ex.: numa
+  // pré-visualização, onde o endereço é "about:srcdoc"), o navegador não
+  // consegue montar o link e "new URL" dá erro. Nesse caso, usamos o
+  // valor de LINK_DECLARACAO como está, para a página não quebrar.
+  function fullUrl(link){
+    try { return new URL(link, location.href).href; }
+    catch(e) { return link; }
+  }
+
+  function drawQR(){
+    const url = fullUrl(LINK_DECLARACAO);                     // endereço completo do PDF
+    qrBox.href = url;                                         // tocar no QR abre o PDF
+    qrCode.innerHTML = "";                                    // garante um único QR desenhado
+    try {
+      new QRCode(qrCode, {
+        text:url, width:360, height:360,                      // desenhado em 360px e exibido em 180px: nítido em telas Retina
+        colorDark:"#1f1f82", colorLight:"#ffffff",            // mesmo azul do cabeçalho
+        correctLevel:QRCode.CorrectLevel.M
+      });
+    } catch(e) {}                                             // link longo demais para um QR: não quebra a página
+  }
+
+  /* ===================================================================
+     7. GIRO DA CARTEIRINHA
+     -------------------------------------------------------------------
+     A cada toque, o ângulo do .flipper aumenta e o CSS anima o giro.
+
+       - Da frente para o verso: +900° = 2 voltas completas (720°)
+         + meia volta (180°). Termina mostrando o verso.
+       - Do verso para a frente: mais +900°, terminando de novo na frente
+         (900 + 900 = 1800° = 5 voltas exatas).
+       - O ângulo só cresce (nunca volta a zero) para que o giro seja
+         sempre no mesmo sentido; voltar a zero faria girar ao contrário.
+       - Com "Reduzir Movimento" ligado no iPhone, gira só 180° (sem as
+         voltas extras).
+
+     Toques que NÃO viram a carteirinha:
+       - em campos de texto, foto, logo e no QR code (são para editar
+         ou abrir a declaração);
+       - quando algum campo está sendo editado: o primeiro toque fora
+         dele apenas fecha o teclado, para não girar sem querer.
+     =================================================================== */
+  const flipper = document.getElementById("flipper");
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let angle = 0;        // ângulo atual em graus
+  let showingBack = false;
+
+  flipper.addEventListener("click", e=>{
+    // Links interativos não devem girar o cartão.
+    if (e.target.closest("a")) return;
+
+    angle += reduceMotion ? 180 : 900;
+    showingBack = !showingBack;
+    flipper.style.transform = `rotateY(${angle}deg)`;
+    flipper.classList.toggle("is-back", showingBack);       // libera os toques só na face visível
+  });
+
+  /* ===================================================================
+     8. INICIALIZAÇÃO
+     Desenha o código de barras (com o RA salvo ou o exemplo "00000000")
+     e o QR code (se já houver um link salvo) assim que a página carrega.
+     =================================================================== */
+  drawBarcode();
+  drawQR();
+</script>
+</body>
+</html>
